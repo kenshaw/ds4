@@ -149,10 +149,6 @@ func (p *pad) Filepath() string {
 }
 
 func runDS4(ctxt context.Context, ti *terminfo.Terminfo, btnDev, mtnDev *pad) error {
-	btnAxes, mtnAxes := btnDev.AbsoluteTypes(), mtnDev.AbsoluteTypes()
-	log.Printf("button axes: %+v", btnAxes)
-	log.Printf("mootion axes: %+v", mtnAxes)
-
 	defer func() {
 		err := recover()
 		termreset(ti)
@@ -160,6 +156,8 @@ func runDS4(ctxt context.Context, ti *terminfo.Terminfo, btnDev, mtnDev *pad) er
 			log.Fatal("unrecoverable error: %v", err)
 		}
 	}()
+
+	btnAxes, mtnAxes := btnDev.AbsoluteTypes(), mtnDev.AbsoluteTypes()
 
 	// set up terminal
 	terminit(ti, fmt.Sprintf("DS4: %s - %s", btnDev.Name(), btnDev.Path()))
