@@ -74,22 +74,6 @@ func run(ctxt context.Context) func() error {
 			defer btnDev.Close()
 			defer mtnDev.Close()
 
-			/*log.Printf(">>> %s", btnDev.Name())
-			log.Printf(">>> %s", btnDev.Path())
-			log.Printf(">>> %s", btnDev.Serial())
-			log.Printf(">>> %s", btnDev.Filepath())
-			log.Printf(">>> bus: %s", btnDev.ID().BusType)
-
-			log.Printf(">>> event types: %+v", btnDev.EventTypes())
-			log.Printf(">>> sync types: %+v", btnDev.SyncTypes())
-			log.Printf(">>> key types: %+v", btnDev.KeyTypes())
-			log.Printf(">>> relative axis types: %+v", btnDev.RelativeTypes())
-			log.Printf(">>> absolute axis types: %+v", btnDev.AbsoluteTypes())
-			log.Printf(">>> effect types: %+v", btnDev.EffectTypes())
-			log.Printf(">>> max effects: %d", btnDev.EffectMax())
-			log.Printf(">>> leds: %+v", btnDev.LEDTypes())
-			log.Printf(">>> powers: %+v", btnDev.PowerTypes())*/
-
 			log.Printf("%s %s [%s]", btnDev.Serial(), btnDev.Name(), btnDev.Path())
 			log.Printf("%s %s [%s]", mtnDev.Serial(), mtnDev.Name(), mtnDev.Path())
 
@@ -172,37 +156,34 @@ func runDS4(ctxt context.Context, ti *terminfo.Terminfo, btnDev, mtnDev *pad) er
 	defer cancel()
 
 	// start polling
-	btnCh, err := btnDev.Poll(ctxt, 64)
-	if err != nil {
-		return err
-	}
-	mtnCh, err := mtnDev.Poll(ctxt, 64)
-	if err != nil {
-		return err
-	}
-
+	btnCh, mtnCh := btnDev.Poll(ctxt), mtnDev.Poll(ctxt)
 	for {
 		select {
 		case <-ctxt.Done():
 			return ctxt.Err()
 
 		case event := <-btnCh:
-			switch {
-			// skip LZ + RZ
-			case event.Type == evdev.EventKey && (event.Code == 0x138 || event.Code == 0x139):
-			case event.Type == evdev.EventKey:
-				v := btns[event.Code]
+			switch typ := event.Type.(type) {
+			case evdev.KeyType:
+				// skip LZ + RZ
+				if typ == evdev.BtnTL2 || typ == evdev.BtnTR2 {
+					continue
+				}
+
+				// write state
+				v := btns[typ]
 				n := v.name
 				if event.Value == 1 {
 					n = ti.Colorf(fg, bg, n)
 				}
 				termputs(ti, padTop+v.row, padLeft+colWidth*v.col, n)
 
-			case event.Type == evdev.EventAbsolute:
-				typ := evdev.AbsoluteType(event.Code)
+			case evdev.AbsoluteType:
 				switch {
+				// dpad
 				case typ == evdev.AbsoluteHat0X || typ == evdev.AbsoluteHat0Y:
-					for p, i := range []uint16{event.Code, event.Code + 2} {
+					c := evdev.KeyType(event.Code)
+					for p, i := range []evdev.KeyType{c, c + 2} {
 						b := btns[i]
 						n := b.name
 						if (p == 0 && event.Value < 0) || (p == 1 && event.Value > 0) {
@@ -211,10 +192,11 @@ func runDS4(ctxt context.Context, ti *terminfo.Terminfo, btnDev, mtnDev *pad) er
 						termputs(ti, padTop+b.row, padLeft+colWidth*b.col, n)
 					}
 
+				// triggers
 				case typ == evdev.AbsoluteZ || typ == evdev.AbsoluteRZ:
-					var v uint16 = 0x138
+					v := evdev.BtnTL2
 					if typ == evdev.AbsoluteRZ {
-						v = 0x139
+						v = evdev.BtnTR2
 					}
 					b := btns[v]
 					n := b.name
@@ -223,18 +205,20 @@ func runDS4(ctxt context.Context, ti *terminfo.Terminfo, btnDev, mtnDev *pad) er
 					}
 					termputs(ti, padTop+b.row, padLeft+colWidth*b.col, n)
 
-				case typ == evdev.AbsoluteX || typ == evdev.AbsoluteY || typ == evdev.AbsoluteRX || typ == evdev.AbsoluteRY:
+				// sticks
+				case typ == evdev.AbsoluteX || typ == evdev.AbsoluteY ||
+					typ == evdev.AbsoluteRX || typ == evdev.AbsoluteRY:
 					a := btnAxes[typ]
 					mid := a.Min + (a.Max-a.Min)/2
 					var offset int
 					if event.Value > mid {
 						offset = 1
 					}
-					c := event.Code
+					c := evdev.KeyType(event.Code)
 					if c >= 3 {
 						c++
 					}
-					for p, i := range []uint16{c, c + 2} {
+					for p, i := range []evdev.KeyType{c, c + 2} {
 						b := btns[i]
 						n := b.name
 						if v := abs(mid - event.Value); p == offset && v >= int(a.Flat) {
@@ -245,11 +229,12 @@ func runDS4(ctxt context.Context, ti *terminfo.Terminfo, btnDev, mtnDev *pad) er
 				}
 			}
 
+		// accelerator and gyro readouts
 		case event := <-mtnCh:
-			if event.Type != evdev.EventAbsolute {
+			typ, ok := event.Type.(evdev.AbsoluteType)
+			if !ok {
 				continue
 			}
-			typ := evdev.AbsoluteType(event.Code)
 			v := fmt.Sprintf("% 4f", round(float64(event.Value)/float64(mtnAxes[typ].Res), 2))
 			if len(v) > 6 {
 				v = v[:6]
@@ -322,26 +307,24 @@ func abs(z int32) int {
 }
 
 // btns contains the button names and layout positions.
-var btns = map[uint16]struct {
+var btns = map[evdev.KeyType]struct {
 	name     string
 	row, col int
 }{
-	0x130: {" ⨉ ", 5, 11},
-	0x131: {"○  ", 4, 12},
-	0x133: {" △ ", 3, 11},
-	0x134: {"  □", 4, 10},
-
-	0x136: {" L¹", 1, 1},
-	0x137: {" R¹", 1, 11},
-	0x138: {" Lᶻ", 0, 1},
-	0x139: {" Rᶻ", 0, 11},
-
-	0x13a: {"SHARE", 2, 3},
-	0x13b: {"\b OPTS", 2, 9},
-	0x13c: {" ㎰ ", 8, 6},
-
-	0x13d: {" L³", 8, 3},
-	0x13e: {" R³", 8, 9},
+	// regular
+	evdev.BtnA:      {" ⨉ ", 5, 11},
+	evdev.BtnB:      {"○  ", 4, 12},
+	evdev.BtnX:      {" △ ", 3, 11},
+	evdev.BtnY:      {"  □", 4, 10},
+	evdev.BtnTL:     {" L¹", 1, 1},
+	evdev.BtnTR:     {" R¹", 1, 11},
+	evdev.BtnTL2:    {" Lᶻ", 0, 1},
+	evdev.BtnTR2:    {" Rᶻ", 0, 11},
+	evdev.BtnSelect: {"SHARE", 2, 3},
+	evdev.BtnStart:  {"\b OPTS", 2, 9},
+	evdev.BtnMode:   {" ㎰ ", 8, 6},
+	evdev.BtnThumbL: {" L³", 8, 3},
+	evdev.BtnThumbR: {" R³", 8, 9},
 
 	// dpad
 	0x10: {"  ←", 4, 0},
